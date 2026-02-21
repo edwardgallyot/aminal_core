@@ -3,6 +3,7 @@ project(aminal_core LANGUAGES CXX)
 add_library(aminal_core STATIC
     src/aminals_editor.cpp
     src/aminals_processor.cpp
+    src/aminals_parameter_list.cpp
 )
 
 target_link_libraries(aminal_core PRIVATE
