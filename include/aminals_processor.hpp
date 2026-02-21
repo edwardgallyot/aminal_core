@@ -13,12 +13,12 @@ namespace aminals
         virtual juce::AudioProcessorEditor* create_editor() = 0;
         virtual const juce::String get_name() const = 0;
         
-        void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-        void releaseResources() override;
+        virtual void prepareToPlay (double sampleRate, int samplesPerBlock) override;
+        virtual void releaseResources() override;
 
         bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
 
-        void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+        virtual void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
         
         using AudioProcessor::processBlock;
 

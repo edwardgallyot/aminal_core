@@ -4,6 +4,7 @@ add_library(aminal_core STATIC
     src/aminals_editor.cpp
     src/aminals_processor.cpp
     src/aminals_parameter_list.cpp
+    src/aminals_sampler.cpp
 )
 
 target_link_libraries(aminal_core PRIVATE
