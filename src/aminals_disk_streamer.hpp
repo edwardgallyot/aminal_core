@@ -16,10 +16,11 @@ namespace aminals
 
         // TODO(edg): Let's have a think about how big the streamer
         // should be.
-        static constexpr size_t MemoryBytes = 1024;
+        static constexpr size_t MemoryBytes = 128;
         using Arena = aminals::Arena<MemoryBytes>;
-    private:
+        
         struct Impl;
+    private:
         Arena arena;
         Arena::Ptr<Impl> impl;
     };

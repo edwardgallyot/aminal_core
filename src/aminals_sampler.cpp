@@ -7,25 +7,25 @@ using namespace aminals;
 
 struct Sampler::Impl
 {
-    Impl(Sampler::Arena& a) : arena(a)
+    Impl()
     {
     }
     ~Impl()
     {
     }
     
-    Sampler::Arena& arena;
     Disk_Streamer disk_streamer;
 };
 
 Sampler::Sampler()
     : arena(),
-      impl(arena.make_unique<Sampler::Impl>(arena))
+      impl(arena.make_unique<Sampler::Impl>())
 {
 }
 
 Sampler::~Sampler()
 {
+
 }
 
 void Sampler::prepare(double sampleRate, int samplesPerBlock)
@@ -48,3 +48,5 @@ void Sampler::release()
 {
     this->impl->disk_streamer.stop_streaming();
 }
+
+static_assert(Sampler::MemoryBytes >= sizeof(Sampler::Impl));
