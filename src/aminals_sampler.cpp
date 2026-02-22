@@ -1,8 +1,11 @@
+#include <iostream>
+
 #include "aminals_sampler.hpp"
 
 using namespace aminals;
 
 Sampler::Sampler()
+    : arena()
 {
 }
 
