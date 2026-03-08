@@ -11,14 +11,11 @@ namespace aminals
         Disk_Streamer();
         ~Disk_Streamer();
         bool start_streaming();
-        bool try_get_chunk(size_t asset_index, float* out_chunk, size_t chunk_size);
+        bool try_get_chunk(float** out_samples, size_t channel, size_t num_samples);
         bool stop_streaming();
 
-        // TODO(edg): Let's have a think about how big the streamer
-        // should be.
-        static constexpr size_t MemoryBytes = 128;
+        static constexpr size_t MemoryBytes = 532592;
         using Arena = aminals::Arena<MemoryBytes>;
-        
         struct Impl;
     private:
         Arena arena;

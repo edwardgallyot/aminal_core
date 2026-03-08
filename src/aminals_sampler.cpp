@@ -7,7 +7,7 @@ using namespace aminals;
 
 struct Sampler::Impl
 {
-    Impl()
+    Impl() : disk_streamer()
     {
     }
     ~Impl()
@@ -25,7 +25,6 @@ Sampler::Sampler()
 
 Sampler::~Sampler()
 {
-
 }
 
 void Sampler::prepare(double sampleRate, int samplesPerBlock)
@@ -38,10 +37,21 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
     for (const auto& metadata : midi)
     {
         auto message = metadata.getMessage();
-
         // For MIDI message debugging
         // std::cout << message.getDescription() << std::endl;
     }
+
+	float* streamed_chunk;
+
+	for (int channel = 0; channel < samples.getNumChannels(); ++channel)
+	{
+		this->impl->disk_streamer.try_get_chunk(&streamed_chunk, channel, samples.getNumSamples());
+		float* write = samples.getWritePointer(channel);
+		for (int sample = 0; sample < samples.getNumSamples(); ++sample)
+		{
+			write[sample] = 0.0f;
+		}
+	}
 }
 
 void Sampler::release()
