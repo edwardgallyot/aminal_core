@@ -27,9 +27,9 @@ Sampler::~Sampler()
 {
 }
 
-void Sampler::prepare(double sampleRate, int samplesPerBlock)
+void Sampler::prepare(double sample_rate, int samples_per_block)
 {
-    this->impl->disk_streamer.start_streaming();
+    this->impl->disk_streamer.start_streaming(sample_rate, samples_per_block);
 }
 
 void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
@@ -49,7 +49,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 		float* write = samples.getWritePointer(channel);
 		for (int sample = 0; sample < samples.getNumSamples(); ++sample)
 		{
-			write[sample] = 0.0f;
+			write[sample] = streamed_chunk[sample];
 		}
 	}
 }
