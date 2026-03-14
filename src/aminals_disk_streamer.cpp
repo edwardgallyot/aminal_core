@@ -298,17 +298,16 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 		
         while (this->stream.load())
         {
-			bool everyone_free = false;
+			bool anyone_free = false;
 			bool can_write[Disk_Streamer::Impl::Expected_Channels] = { };
 			bool can_read[Disk_Streamer::Impl::Expected_Channels] = { };
-			while (!everyone_free && this->stream.load())
+			while (!anyone_free && this->stream.load())
 			{
-				everyone_free = true;
 				for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Channels; ++channel)
 				{
 					can_write[channel] = this->queue.get_free_space(channel) >= this->block_size;
 					can_read[channel] = wav_file.get_num_can_read(sample_count[channel]) >= this->block_size;
-					everyone_free = everyone_free && can_write[channel];
+					anyone_free = anyone_free || can_write[channel];
 
 					// for now just loop the test file but we can imagine this being a pre-fetch.
 					if (!can_read[channel])
@@ -319,15 +318,15 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 					}
 				}
 			
-				if (!everyone_free && this->stream.load()) wait.acquire();
-			}
+				if (!anyone_free && this->stream.load()) wait.acquire();
+			 }
 
 			if (!this->stream.load()) break;
 			
 			bool written[Disk_Streamer::Impl::Expected_Channels] = { };
 			for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Channels; ++channel)
 			{
-				if (can_read[channel])
+				if (can_read[channel] && can_write[channel])
 				{
 					wav_file.read(scratch[channel].data(), channel, sample_count[channel], this->block_size);
 					written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
