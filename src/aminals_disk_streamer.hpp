@@ -14,7 +14,7 @@ namespace aminals
         bool try_get_chunk(float** out_samples, size_t channel, size_t num_samples);
         bool stop_streaming();
 
-        static constexpr size_t MemoryBytes = 4243520;
+        static constexpr size_t MemoryBytes = 4243584;
         using Arena = aminals::Arena<MemoryBytes>;
         struct Impl;
     private:

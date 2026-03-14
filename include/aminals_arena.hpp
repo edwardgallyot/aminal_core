@@ -18,6 +18,7 @@ namespace aminals
         template<typename T>
         struct Deleter
         {
+            Deleter() = default;
             Deleter(Arena* a) : arena(a) {}
             void operator() (T* p) const noexcept
             {
@@ -25,7 +26,7 @@ namespace aminals
                 p->~T();
             }
 
-            Arena* arena;
+            Arena* arena = nullptr;
         };
 
         template <typename T>

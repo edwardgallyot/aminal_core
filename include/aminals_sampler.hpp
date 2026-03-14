@@ -16,7 +16,7 @@ namespace aminals
         void process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& buffer);
         void release();
 
-        static constexpr size_t MemoryBytes = 4243552;
+        static constexpr size_t MemoryBytes = 4243616;
         using Arena = aminals::Arena<MemoryBytes>;
         struct Impl;
     private:

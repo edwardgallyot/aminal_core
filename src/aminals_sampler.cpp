@@ -45,7 +45,10 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 
 	for (int channel = 0; channel < samples.getNumChannels(); ++channel)
 	{
-		this->impl->disk_streamer.try_get_chunk(&streamed_chunk, channel, samples.getNumSamples());
+		if (!this->impl->disk_streamer.try_get_chunk(&streamed_chunk, channel, samples.getNumSamples()))
+		{
+			std::cout << "channel " << channel << " failed!" << std::endl;
+		}
 		float* write = samples.getWritePointer(channel);
 		for (int sample = 0; sample < samples.getNumSamples(); ++sample)
 		{
@@ -59,4 +62,4 @@ void Sampler::release()
     this->impl->disk_streamer.stop_streaming();
 }
 
-static_assert(Sampler::MemoryBytes >= sizeof(Sampler::Impl));
+static_assert(Sampler::MemoryBytes == sizeof(Sampler::Impl));
