@@ -10,7 +10,7 @@
 
 namespace aminals
 {
-    template<size_t capacity>
+    template<size_t capacity = 0>
     class Arena
     {
     public:
@@ -59,13 +59,18 @@ namespace aminals
             this->count = 0;
         }
 
+		static constexpr size_t const_align(size_t bytes, size_t align)
+		{
+			size_t r = bytes % align;
+			if (r) bytes += (align - r);
+			return bytes;
+		}
+
     private:
         
         std::byte* push(size_t size, size_t align)
         {
-            size_t r = this->count % align;
-            if (r) this->count += (align - r);
-
+			this->count = const_align(this->count, align);
             if (this->count + size > capacity) return nullptr;
 
             std::byte* res = &this->buffer[this->count];

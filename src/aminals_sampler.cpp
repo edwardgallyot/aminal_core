@@ -27,6 +27,11 @@ Sampler::~Sampler()
 {
 }
 
+void Sampler::set_streaming_file(const char* filename)
+{
+	this->impl->disk_streamer.set_streaming_file(filename);
+}
+
 void Sampler::prepare(double sample_rate, int samples_per_block)
 {
     this->impl->disk_streamer.start_streaming(sample_rate, samples_per_block);
