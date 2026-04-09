@@ -87,27 +87,61 @@ bool Streaming_Queue<Num_Queues, Capacity>::try_read(size_t queue, float* some_d
     return true;
 }
 
+struct Stereo_Pcm_Chunk
+{
+	Stereo_Pcm_Chunk(const float* l, const float* r, size_t num_samples) :
+		left(l, num_samples),
+		right(r, num_samples)
+	{}
 
+	enum class Channel
+	{
+		Left,
+		Right,
+	};
+
+	void read(Channel c, size_t sample_count, float const** out);
+
+	const aminals::Span<float> get_channel(Channel c)
+	{
+		switch (c)
+		{
+		case Channel::Left: return this->left;
+		case Channel::Right: return this->right;
+		}
+		return {};
+	}
+
+	aminals::Span<float> left;
+	aminals::Span<float> right;
+};
+
+void Stereo_Pcm_Chunk::read(Channel c, size_t sample_count, float const** out)
+{
+	aminals::Span<float> channel = get_channel(c);
+	*out = channel.data + sample_count;
+}
 
 struct Disk_Streamer::Impl
 {
     static constexpr size_t Expected_Block_Size = 2048;
-    static constexpr size_t Num_Blocks          = 128;
-	static constexpr size_t Expected_Channels   = 2;
-	
-    static constexpr size_t Queue_Size          = Expected_Block_Size * Num_Blocks * Expected_Channels;
+    static constexpr size_t Num_Blocks          = 2;
+	// TODO(edg): We should define "MappedFiles" in an environment file.
+	static constexpr size_t Expected_Queues     = Disk_Streamer::Num_Voices*Disk_Streamer::Channels_Per_Voice;
+
+    static constexpr size_t Queue_Size          = Expected_Block_Size * Num_Blocks * Expected_Queues;
 	
     static constexpr size_t Num_Out_Blocks      = 1;
 	static constexpr size_t Out_Samples         = (Num_Out_Blocks
 												   * Expected_Block_Size
-												   * Expected_Channels);
+												   * Expected_Queues);
 	
     static constexpr size_t Num_Scratch_Blocks  = 1;
 	static constexpr size_t Scratch_Samples     = (Num_Scratch_Blocks
 												   * Expected_Block_Size
-												   * Expected_Channels);
+												   * Expected_Queues);
  	
-    using Queue = Streaming_Queue<Expected_Channels, Queue_Size>;
+    using Queue = Streaming_Queue<Expected_Queues, Queue_Size>;
 	
     Impl() : queue(),
 			 scratch(),
@@ -115,7 +149,11 @@ struct Disk_Streamer::Impl
 			 stream(false),
 			 thread(std::nullopt),
 			 wait(0),
-			 filename(nullptr)
+			 filename(nullptr),
+			 offsets(),
+			 channel_strides(),
+			 sizes(),
+			 sample_counts()
     {}
     ~Impl() { stop_streaming(); }
     
@@ -123,13 +161,16 @@ struct Disk_Streamer::Impl
     bool try_get_chunk(float** samples, size_t channel, size_t num_samples);
     bool stop_streaming();
 	Queue  queue;
-	std::array<std::array<float, Scratch_Samples>, Expected_Channels> scratch;
+	std::array<std::array<float, Scratch_Samples>, Expected_Queues> scratch;
 	std::array<float, Out_Samples> out;
 	std::atomic_bool stream;
     std::optional<std::jthread> thread;
 	std::binary_semaphore wait;
 	char* filename;
 	aminals::Span<unsigned long long> offsets;
+	aminals::Span<unsigned long long> channel_strides;
+	aminals::Span<unsigned long long> sizes;
+	aminals::Mutable_Span<unsigned long long> sample_counts;
 	uint32_t block_size;
 	double fs;
 };
@@ -144,24 +185,34 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
     auto thread_func = [&] () {
 		juce::File file = juce::File(this->filename);
 		juce::MemoryMappedFile mapped_file { file, juce::MemoryMappedFile::AccessMode::readOnly };
+
+		if (mapped_file.getData())
+		{
+			std::cout << "successfully mapped: " << this->filename << std::endl;
+		}
+		else
+		{
+			// TODO(edg): How do we handle this error? We probably want to alert the user.
+			std::cout << "couldn't map: " << this->filename << std::endl;
+		}
 		
 		std::cout << "samples per block: " << this->block_size << std::endl;
 		
 		const auto pre_fetch_blocks = 64;
-		size_t sample_count[Disk_Streamer::Impl::Expected_Channels] = { 0, 0 };
+
 		for (size_t block = 0; block < pre_fetch_blocks; ++block)
 		{
-			bool written[Disk_Streamer::Impl::Expected_Channels] = { false, false };
-			for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Channels; ++channel)
+			bool written[Disk_Streamer::Impl::Expected_Queues] = { };
+			for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Queues; ++channel)
 			{
 				float* samples = this->scratch[channel].data();
 
                 // wav_file.read(scratch[channel].data(), channel, sample_count[channel], this->block_size);
 				written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
-				if(written[channel]) sample_count[channel] += this->block_size;
+				if(written[channel]) this->sample_counts[channel] += this->block_size;
 				if(!written[channel])
 				{
-					std::cout << "Prefetch failed at: " << channel << " " << sample_count[channel] << std::endl;
+					std::cout << "Prefetch failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
 				}
 			}
 		}
@@ -169,11 +220,11 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
         while (this->stream.load())
         {
 			bool anyone_free = false;
-			bool can_write[Disk_Streamer::Impl::Expected_Channels] = { };
-			bool can_read[Disk_Streamer::Impl::Expected_Channels] = { };
+			bool can_write[Disk_Streamer::Impl::Expected_Queues] = { };
+			bool can_read[Disk_Streamer::Impl::Expected_Queues] = { };
 			while (!anyone_free && this->stream.load())
 			{
-				for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Channels; ++channel)
+				for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Queues; ++channel)
 				{
 					can_write[channel] = this->queue.get_free_space(channel) >= this->block_size;
 					can_read[channel] = true; // wav_file.get_num_can_read(sample_count[channel]) >= this->block_size;
@@ -183,7 +234,7 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 					if (!can_read[channel])
 					{
 						// reset the sample count 
-						sample_count[channel] = 0;
+						this->sample_counts[channel] = 0;
 						can_read[channel] = true;// wav_file.get_num_can_read(sample_count[channel]) >= this->block_size;
 					}
 				}
@@ -193,8 +244,8 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 
 			if (!this->stream.load()) break;
 			
-			bool written[Disk_Streamer::Impl::Expected_Channels] = { };
-			for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Channels; ++channel)
+			bool written[Disk_Streamer::Impl::Expected_Queues] = { };
+			for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Queues; ++channel)
 			{
 				if (can_read[channel] && can_write[channel])
 				{
@@ -202,11 +253,11 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 					written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
 					if(written[channel])
 					{
-						sample_count[channel] += this->block_size;
+						this->sample_counts[channel] += this->block_size;
 					}
 					else
 					{
-						std::cout << "Write loop failed at: " << channel << " " << sample_count[channel] << std::endl;
+						std::cout << "Write loop failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
 					}
 				}
 			}
@@ -260,6 +311,26 @@ Disk_Streamer::~Disk_Streamer()
 void Disk_Streamer::set_streaming_file(const char* filename)
 {
 	this->impl->filename = (char*)filename;
+}
+
+void Disk_Streamer::set_total_sizes(const unsigned long long* sizes, size_t count)
+{
+	this->impl->sizes = { sizes, count };
+}
+
+void Disk_Streamer::set_offsets(const unsigned long long* offsets, size_t count)
+{
+	this->impl->offsets = { offsets, count };
+}
+
+void Disk_Streamer::set_sample_counts(unsigned long long* sample_counts, size_t count)
+{
+	this->impl->sample_counts = { sample_counts, count };
+}
+	
+void Disk_Streamer::set_channel_strides(const unsigned long long* channel_strides, size_t count)
+{
+	this->impl->channel_strides = { channel_strides, count };
 }
 
 bool Disk_Streamer::start_streaming(double sample_rate, int samples_per_block)

@@ -12,11 +12,18 @@ namespace aminals
         ~Disk_Streamer();
 
 		void set_streaming_file(const char* filename);
+		void set_total_sizes(const unsigned long long* sizes, size_t count);
+		void set_offsets(const unsigned long long* offsets, size_t count);
+		void set_channel_strides(const unsigned long long* channel_strides, size_t count);
+		void set_sample_counts(unsigned long long* sample_counts, size_t count);
 		bool start_streaming(double sample_rate, int samples_per_block);
         bool try_get_chunk(float** out_samples, size_t channel, size_t num_samples);
         bool stop_streaming();
 
-        static constexpr size_t MemoryBytes = Arena<>::const_align(4243616, sizeof(size_t));
+		static constexpr size_t Num_Voices = 32;
+		static constexpr size_t Channels_Per_Voice = 2;
+
+        static constexpr size_t MemoryBytes = Arena<>::const_align(142576144, sizeof(size_t));
         using Arena = aminals::Arena<MemoryBytes>;
         struct Impl;
     private:
