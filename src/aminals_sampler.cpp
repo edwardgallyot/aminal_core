@@ -17,7 +17,7 @@ struct Sampler::Impl
 {
     Impl() : voice_requests(),
 			 voice_request_sample_ids(),
-			 disk_streamer(),
+			 disk_streamer(voice_requests, voice_request_sample_ids),
 			 midi_map(),
 			 sample_names(),
 			 voice_assignments(),
@@ -26,7 +26,7 @@ struct Sampler::Impl
     {
 		for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 		{
-			free_voices.push({ -1, v });
+			free_voices.push({ .sample_id = -1, .voice_id = v });
 		}
     }
     ~Impl()
@@ -69,7 +69,6 @@ struct Sampler::Impl
 		this->voice_requests[v.voice_id].store(false);
 		this->voice_request_sample_ids[v.voice_id].store(-1);
 	}
-	
     
 	std::array<std::atomic_bool, Disk_Streamer::Num_Voices> voice_requests;
 	std::array<std::atomic<long long>, Disk_Streamer::Num_Voices> voice_request_sample_ids;
@@ -183,7 +182,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 						  << " -x "
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
-				this->impl->deactivate_voice({ voice_id, sample_id });
+				this->impl->deactivate_voice({ .sample_id = sample_id, .voice_id = voice_id });
 			}
 			else
 			{
@@ -192,20 +191,32 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 		}
     }
 
-	float* streamed_chunk;
 
 	for (int channel = 0; channel < samples.getNumChannels(); ++channel)
 	{
-		if (!this->impl->disk_streamer.try_get_chunk(&streamed_chunk, channel, samples.getNumSamples()))
-		{
-			std::cout << "channel " << channel << " failed!" << std::endl;
-		}
-
-		// TODO(edg): Vectorise.
 		float* write = samples.getWritePointer(channel);
 		for (int sample = 0; sample < samples.getNumSamples(); ++sample)
 		{
-			write[sample] = streamed_chunk[sample];
+			write[sample] = 0.0f;
+		}
+	}
+
+	float* streamed_chunk;
+	for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
+	{
+		for (int channel = 0; channel < samples.getNumChannels(); ++channel)
+		{
+			if (!this->impl->disk_streamer.try_get_chunk(&streamed_chunk, v, channel, samples.getNumSamples()))
+			{
+				continue;
+			}
+
+			float* write = samples.getWritePointer(channel);
+		
+			for (int sample = 0; sample < samples.getNumSamples(); ++sample)
+			{
+				write[sample] += streamed_chunk[sample];
+			}
 		}
 	}
 }
