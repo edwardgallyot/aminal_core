@@ -15,7 +15,9 @@ struct Voice
 
 struct Sampler::Impl
 {
-    Impl() : disk_streamer(),
+    Impl() : voice_requests(),
+			 voice_request_sample_ids(),
+			 disk_streamer(),
 			 midi_map(),
 			 sample_names(),
 			 voice_assignments(),
@@ -55,8 +57,24 @@ struct Sampler::Impl
 		free_voices.push({-1, voice_id});
 		return true;
 	}
+
+	void activate_voice(Voice v)
+	{
+		this->voice_requests[v.voice_id].store(true);
+		this->voice_request_sample_ids[v.voice_id].store(v.sample_id);
+	}
+	
+	void deactivate_voice(Voice v)
+	{
+		this->voice_requests[v.voice_id].store(false);
+		this->voice_request_sample_ids[v.voice_id].store(-1);
+	}
+	
     
+	std::array<std::atomic_bool, Disk_Streamer::Num_Voices> voice_requests;
+	std::array<std::atomic<long long>, Disk_Streamer::Num_Voices> voice_request_sample_ids;
     Disk_Streamer disk_streamer;
+	
 	aminals::Span<char> midi_map;
 	aminals::Span<const char*> sample_names;
 	aminals::Mutable_Span<long long> voice_assignments;
@@ -128,9 +146,16 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
     for (const auto& metadata : midi)
     {
         auto message = metadata.getMessage();
-
+		
 		auto sample_id = this->impl->midi_map[message.getNoteNumber()];
-		if (message.isNoteOn() && sample_id != -1)
+		auto sample_id_valid = sample_id != -1;
+		
+		if (!sample_id_valid)
+		{
+			continue;
+		}
+		
+		if (message.isNoteOn())
 		{
 			Voice v;
 			if (this->impl->try_allocate_voice(v, sample_id))
@@ -140,6 +165,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 						  << " -> "
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
+				this->impl->activate_voice(v);
 			}
 			else
 			{
@@ -147,7 +173,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 			}
 		}
 
-		if (message.isNoteOff() && sample_id != -1)
+		if (message.isNoteOff())
 		{
 			auto voice_id = this->impl->voice_assignments[sample_id];
 			if (this->impl->deallocate_sample_id(sample_id))
@@ -157,13 +183,12 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 						  << " -x "
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
-				
+				this->impl->deactivate_voice({ voice_id, sample_id });
 			}
 			else
 			{
+				std::cout << "Unable to deallocate voice" << std::endl;
 			}
-
-
 		}
     }
 

@@ -208,11 +208,11 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 				float* samples = this->scratch[channel].data();
 
                 // wav_file.read(scratch[channel].data(), channel, sample_count[channel], this->block_size);
-				written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
+				// written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
 				if(written[channel]) this->sample_counts[channel] += this->block_size;
 				if(!written[channel])
 				{
-					std::cout << "Prefetch failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
+					// std::cout << "Prefetch failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
 				}
 			}
 		}
@@ -250,14 +250,14 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 				if (can_read[channel] && can_write[channel])
 				{
 					// wav_file.read(scratch[channel].data(), channel, sample_count[channel], this->block_size);
-					written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
+					// written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
 					if(written[channel])
 					{
 						this->sample_counts[channel] += this->block_size;
 					}
 					else
 					{
-						std::cout << "Write loop failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
+						// std::cout << "Write loop failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
 					}
 				}
 			}
