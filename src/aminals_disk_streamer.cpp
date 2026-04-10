@@ -51,7 +51,7 @@ void Streaming_Queue<Num_Queues, Capacity>::copy_some_data(float* dest, const fl
 template<size_t Num_Queues, size_t Capacity>
 bool Streaming_Queue<Num_Queues, Capacity>::try_write(size_t queue, const float* some_data, int num_items)
 {
-    const auto scope = abstract_fifo[queue]->write (num_items);
+    const auto scope = abstract_fifo[queue]->write(num_items);
 	Buffer* buffer = &buffers[queue];
 	if (scope.blockSize1 + scope.blockSize2 != num_items) return false;
 	
@@ -125,11 +125,11 @@ void Stereo_Pcm_Chunk::read(Channel c, size_t sample_count, float const** out)
 struct Disk_Streamer::Impl
 {
     static constexpr size_t Expected_Block_Size = 1024;
-    static constexpr size_t Num_Blocks          = 2;
+    static constexpr size_t Num_Blocks          = 4;
 	// TODO(edg): We should define "MappedFiles" in an environment file.
 	static constexpr size_t Expected_Queues     = Disk_Streamer::Num_Voices*Disk_Streamer::Channels_Per_Voice;
 
-    static constexpr size_t Queue_Size          = Expected_Block_Size * Num_Blocks * Expected_Queues;
+    static constexpr size_t Queue_Size          = Expected_Block_Size * Num_Blocks;
 	
     static constexpr size_t Num_Out_Blocks      = 1;
 	static constexpr size_t Out_Samples         = (Num_Out_Blocks
@@ -137,9 +137,8 @@ struct Disk_Streamer::Impl
 												   * Expected_Queues);
 	
     static constexpr size_t Num_Scratch_Blocks  = 1;
-	static constexpr size_t Scratch_Samples     = (Num_Scratch_Blocks
-												   * Expected_Block_Size
-												   * Expected_Queues);
+	static constexpr size_t Scratch_Samples     = Expected_Block_Size;
+												  
  	
     using Queue = Streaming_Queue<Expected_Queues, Queue_Size>;
 	
@@ -156,6 +155,7 @@ struct Disk_Streamer::Impl
 		  channel_strides(),
 		  sizes(),
 		  sample_counts(),
+		  block_size(0),
 		  voice_requests(_voice_requests),
 		  voice_request_sample_ids(_voice_request_sample_ids)
 	{}
@@ -165,7 +165,7 @@ struct Disk_Streamer::Impl
     bool try_get_chunk(float** samples, long long voice_id, size_t channel, size_t num_samples);
     bool stop_streaming();
 	Queue  queue;
-	std::array<std::array<float, Scratch_Samples>, Expected_Queues> scratch;
+	std::array<std::array<float, Scratch_Samples>, Disk_Streamer::Channels_Per_Voice> scratch;
 	std::array<float, Out_Samples> out;
 	std::atomic_bool stream;
     std::optional<std::jthread> thread;
@@ -204,8 +204,6 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 		
 		std::cout << "samples per block: " << this->block_size << std::endl;
 		
-		const auto pre_fetch_blocks = 64;
-		
         while (this->stream.load())
         {
 			bool anyone_free = false;
@@ -214,19 +212,15 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 			{
 				for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 				{
-					
 					if (voice_requests[v].load() && voice_request_sample_ids[v] != -1)
 					{
 						for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 						{
-							can_write[v][channel] = this->queue.get_free_space(channel + (Disk_Streamer::Channels_Per_Voice * v)) >= this->block_size;
+							can_write[v][channel] =
+								this->queue.get_free_space(channel + (Disk_Streamer::Channels_Per_Voice * v)) >= this->block_size;
 							anyone_free = anyone_free || can_write[channel];
 						}
-						std::cout << "STREAM "
-								  << v
-							      << " -> SAMPLE ID "
-							      << voice_request_sample_ids[v]
-								  << std::endl;
+
 					}
 				}
 				if (!anyone_free && this->stream.load()) wait.acquire();
@@ -239,65 +233,29 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 			{
 				for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 				{
-					if (can_write[v][channel] && voice_request_sample_ids[v] != -1)
+					auto atomic_sample_id = voice_request_sample_ids[v].load();
+					if (can_write[v][channel] && atomic_sample_id  != -1)
 					{
-						written[v][channel] = this->queue.try_write(channel + (Disk_Streamer::Channels_Per_Voice * v), scratch[channel].data(), this->block_size);
+						written[v][channel] = this->queue.try_write(
+							(Disk_Streamer::Channels_Per_Voice * v) + channel,
+							scratch[channel].data(),
+							this->block_size);
 						if(written[v][channel])
 						{
-
-							this->sample_counts[voice_request_sample_ids[v]] += this->block_size;
+							this->sample_counts[atomic_sample_id] += this->block_size;
+							std::cout << "STREAM "
+									  << v
+									  << " -> SAMPLE ID "
+									  << atomic_sample_id
+									  << std::endl;
 						}
 						else
 						{
 							std::cout << "Write loop failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
 						}
-					}
-				}
+					}}
+				
 			}
-#if 0
-			bool anyone_free = false;
-			bool can_write[Disk_Streamer::Impl::Expected_Queues] = { };
-			bool can_read[Disk_Streamer::Impl::Expected_Queues] = { };
-			while (!anyone_free && this->stream.load())
-			{
-				for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Queues; ++channel)
-				{
-					can_write[channel] = this->queue.get_free_space(channel) >= this->block_size;
-					can_read[channel] = true; // wav_file.get_num_can_read(sample_count[channel]) >= this->block_size;
-					anyone_free = anyone_free || can_write[channel];
-
-					// for now just loop the test file but we can imagine this being a pre-fetch.
-					if (!can_read[channel])
-					{
-						// reset the sample count 
-						this->sample_counts[channel] = 0;
-						can_read[channel] = true;// wav_file.get_num_can_read(sample_count[channel]) >= this->block_size;
-					}
-				}
-			
-				if (!anyone_free && this->stream.load()) wait.acquire();
-			 }
-
-			if (!this->stream.load()) break;
-			
-			bool written[Disk_Streamer::Impl::Expected_Queues] = { };
-			for (int channel = 0; channel < Disk_Streamer::Impl::Expected_Queues; ++channel)
-			{
-				if (can_read[channel] && can_write[channel])
-				{
-					// wav_file.read(scratch[channel].data(), channel, sample_count[channel], this->block_size);
-					written[channel] = this->queue.try_write(channel, scratch[channel].data(), this->block_size);
-					if(written[channel])
-					{
-						this->sample_counts[channel] += this->block_size;
-					}
-					else
-					{
-						std::cout << "Write loop failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
-					}
-				}
-			}
-#endif
 		}
 
 		std::cout << "Streamer thread exiting" << std::endl;
