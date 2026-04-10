@@ -20,7 +20,7 @@ struct Streaming_Queue
 	static constexpr size_t Memory_Bytes = sizeof(juce::AbstractFifo) * Num_Queues;
 	using FifoArena = aminals::Arena<Memory_Bytes>;
 	using Buffer = std::array<float, Capacity>;
-	using Buffers = std::array<std::array<float, Capacity>, Num_Queues>;
+	using Buffers = std::array<Buffer, Num_Queues>;
 	static constexpr size_t Num_Scratch_Blocks = 32;
     void copy_some_data(float* dest, const float* src, int num_items);
     bool try_write(size_t queue, const float* some_data, int num_items);
@@ -46,15 +46,19 @@ template<size_t Num_Queues, size_t Capacity>
 void Streaming_Queue<Num_Queues, Capacity>::copy_some_data(float* dest, const float* src, int num_items)
 {
 	juce::FloatVectorOperations::copy(dest, src, num_items);
+	// for (int i = 0; i < num_items; ++i)
+	// {
+	// 	dest[i] = src[i];
+	// }
 }
 
 template<size_t Num_Queues, size_t Capacity>
 bool Streaming_Queue<Num_Queues, Capacity>::try_write(size_t queue, const float* some_data, int num_items)
 {
     const auto scope = abstract_fifo[queue]->write(num_items);
-	Buffer* buffer = &buffers[queue];
+
 	if (scope.blockSize1 + scope.blockSize2 != num_items) return false;
-	
+	Buffer* buffer = &buffers[queue];	
     if (scope.blockSize1 > 0)
     {
         copy_some_data(buffer->data() + scope.startIndex1, some_data, scope.blockSize1);
@@ -71,7 +75,7 @@ bool Streaming_Queue<Num_Queues, Capacity>::try_write(size_t queue, const float*
 template<size_t Num_Queues, size_t Capacity>
 bool Streaming_Queue<Num_Queues, Capacity>::try_read(size_t queue, float* some_data, int num_items)
 {
-    const auto scope = abstract_fifo[queue]->read (num_items);
+    const auto scope = abstract_fifo[queue]->read(num_items);
 	Buffer* buffer = &buffers[queue];
 	if (scope.blockSize1 + scope.blockSize2 != num_items) return false;
     if (scope.blockSize1 > 0)
@@ -89,10 +93,12 @@ bool Streaming_Queue<Num_Queues, Capacity>::try_read(size_t queue, float* some_d
 
 struct Stereo_Pcm_Chunk
 {
-	Stereo_Pcm_Chunk(const float* l, const float* r, size_t num_samples) :
+	Stereo_Pcm_Chunk(float* l, float* r, size_t num_samples) :
 		left(l, num_samples),
 		right(r, num_samples)
 	{}
+	
+	Stereo_Pcm_Chunk() = default;
 
 	enum class Channel
 	{
@@ -100,32 +106,43 @@ struct Stereo_Pcm_Chunk
 		Right,
 	};
 
-	void read(Channel c, size_t sample_count, float const** out);
-
-	const aminals::Span<float> get_channel(Channel c)
-	{
-		switch (c)
-		{
-		case Channel::Left: return this->left;
-		case Channel::Right: return this->right;
-		}
-		return {};
-	}
-
-	aminals::Span<float> left;
-	aminals::Span<float> right;
+	static Channel channel_from_index(size_t i) { return i == 0 ? Channel::Left : Channel::Right; }
+	void read(Channel c, float** out, size_t sample_count);
+	const aminals::Mutable_Span<float> get_channel(Channel c);
+	size_t get_num_can_read(Channel c, size_t sample_count);
+	aminals::Mutable_Span<float> left = {};
+	aminals::Mutable_Span<float> right = {};
 };
 
-void Stereo_Pcm_Chunk::read(Channel c, size_t sample_count, float const** out)
+void Stereo_Pcm_Chunk::read(Channel c, float** out, size_t sample_count)
 {
-	aminals::Span<float> channel = get_channel(c);
-	*out = channel.data + sample_count;
+	aminals::Mutable_Span<float> channel = get_channel(c);
+
+	*out = (channel.data + sample_count);
+}
+
+size_t Stereo_Pcm_Chunk::get_num_can_read(Channel c, size_t sample_count)
+{
+	aminals::Mutable_Span<float> channel = get_channel(c);
+	return sample_count < channel.size
+		? (channel.size - sample_count)
+		: 0;
+}
+
+const aminals::Mutable_Span<float> Stereo_Pcm_Chunk::get_channel(Channel c)
+{
+	switch (c)
+	{
+	case Channel::Left: return this->left;
+	case Channel::Right: return this->right;
+	}
+	return {};
 }
 
 struct Disk_Streamer::Impl
 {
     static constexpr size_t Expected_Block_Size = 1024;
-    static constexpr size_t Num_Blocks          = 4;
+    static constexpr size_t Num_Blocks          = 16;
 	// TODO(edg): We should define "MappedFiles" in an environment file.
 	static constexpr size_t Expected_Queues     = Disk_Streamer::Num_Voices*Disk_Streamer::Channels_Per_Voice;
 
@@ -186,13 +203,14 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 	stop_streaming();
 	this->stream.store(true);
 	this->fs = sample_rate;
-	this->block_size = samples_per_block;
+	this->block_size = samples_per_block * (Disk_Streamer::Impl::Num_Blocks / 4);
 	this->queue.reset_queues();
     auto thread_func = [&] () {
 		juce::File file = juce::File(this->filename);
 		juce::MemoryMappedFile mapped_file { file, juce::MemoryMappedFile::AccessMode::readOnly };
+		uint8_t* mapped_data = static_cast<uint8_t*>(mapped_file.getData());
 
-		if (mapped_file.getData())
+		if (mapped_data)
 		{
 			std::cout << "successfully mapped: " << this->filename << std::endl;
 		}
@@ -204,21 +222,52 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 		
 		std::cout << "samples per block: " << this->block_size << std::endl;
 		
+		bool written[Disk_Streamer::Num_Voices][Disk_Streamer::Channels_Per_Voice] = { };
+		
         while (this->stream.load())
         {
 			bool anyone_free = false;
 			bool can_write[Disk_Streamer::Num_Voices][Disk_Streamer::Channels_Per_Voice] = { };
-			while (!anyone_free && this->stream.load())
+			bool can_read[Disk_Streamer::Num_Voices][Disk_Streamer::Channels_Per_Voice] = { };
+			Stereo_Pcm_Chunk pcm_chunks[Disk_Streamer::Num_Voices] = {};
+			while (!anyone_free  && this->stream.load())
 			{
 				for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 				{
-					if (voice_requests[v].load() && voice_request_sample_ids[v] != -1)
+					auto atomic_sample_id = voice_request_sample_ids[v].load();
+					
+					if (voice_requests[v].load() && atomic_sample_id != -1)
 					{
+
+
+						auto left = reinterpret_cast<float*>(
+							&mapped_data[this->offsets[atomic_sample_id]]);
+						auto right = reinterpret_cast<float*>(
+							&mapped_data[this->offsets[atomic_sample_id]
+										+ this->channel_strides[atomic_sample_id]]);
+						pcm_chunks[v] = {
+							left,
+							right,
+							this->channel_strides[atomic_sample_id]
+						};
 						for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 						{
+							can_read[v][channel] =
+								pcm_chunks[v].get_num_can_read(Stereo_Pcm_Chunk::channel_from_index(channel),
+														   this->sample_counts[atomic_sample_id])
+								>= this->block_size;
+
+							
 							can_write[v][channel] =
 								this->queue.get_free_space(channel + (Disk_Streamer::Channels_Per_Voice * v)) >= this->block_size;
-							anyone_free = anyone_free || can_write[channel];
+
+							// TODO(edg): These just loop how do we fix this?
+							if (!can_read[v][channel])
+							{
+								this->sample_counts[atomic_sample_id] = 0;
+							}
+
+							anyone_free = anyone_free || can_write[v][channel] || written[v][channel];
 						}
 
 					}
@@ -227,37 +276,50 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 			}
 			
 			if (!this->stream.load()) break;
-			
-			bool written[Disk_Streamer::Num_Voices][Disk_Streamer::Channels_Per_Voice] = { };
+
 			for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 			{
+				bool increment = false;
+				auto atomic_sample_id = voice_request_sample_ids[v].load();
 				for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 				{
-					auto atomic_sample_id = voice_request_sample_ids[v].load();
-					if (can_write[v][channel] && atomic_sample_id  != -1)
+					if (written[v][channel]) continue;
+					if(can_write[v][channel] && can_read[v][channel] && atomic_sample_id != -1)
 					{
+						float* scratch_samples;;
+						pcm_chunks[v].read(Stereo_Pcm_Chunk::channel_from_index(channel),
+									   &scratch_samples,
+									   this->sample_counts[atomic_sample_id]);
 						written[v][channel] = this->queue.try_write(
-							(Disk_Streamer::Channels_Per_Voice * v) + channel,
-							scratch[channel].data(),
+							(v * Disk_Streamer::Channels_Per_Voice) + channel,
+							scratch_samples,
 							this->block_size);
-						if(written[v][channel])
-						{
-							this->sample_counts[atomic_sample_id] += this->block_size;
-							std::cout << "STREAM "
-									  << v
-									  << " -> SAMPLE ID "
-									  << atomic_sample_id
-									  << std::endl;
-						}
-						else
-						{
-							std::cout << "Write loop failed at: " << channel << " " << this->sample_counts[channel] << std::endl;
-						}
-					}}
-				
+#if 0						
+						std::cout << "STREAM "
+								  << v
+								  << " -> SAMPLE ID "
+								  << atomic_sample_id
+								  << " - COUNT "
+								  << this->sample_counts[atomic_sample_id]
+								  << std::endl;
+#endif
+					}
+				}
+				bool all_written = true;
+				for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
+				{
+					all_written = all_written && written[v][channel];
+				}
+				if (all_written)
+				{
+					this->sample_counts[atomic_sample_id] += this->block_size;
+					for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
+					{
+						written[v][channel] = false;
+					}
+				}
 			}
 		}
-
 		std::cout << "Streamer thread exiting" << std::endl;
 		return;
     };
@@ -267,18 +329,22 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 
 bool Disk_Streamer::Impl::try_get_chunk(float** samples, long long voice_id, size_t channel, size_t num_samples)
 {
-	auto queue = (Disk_Streamer::Channels_Per_Voice * voice_id) + channel;
 	auto res = false;
+	#if 1
+	auto queue = (Disk_Streamer::Channels_Per_Voice * voice_id) + channel;
 	if (this->queue.get_num_ready(queue) >= num_samples
 		&& this->queue.try_read(queue, this->out.data(), num_samples))
 	{
-		wait.release();
 		res = true;
 	}
 	else
 	{
 		out = {};
 	}
+	#else
+	out = {};
+	wait.release();
+	#endif
 	wait.release();
 
 	*samples = this->out.data();
@@ -326,6 +392,7 @@ void Disk_Streamer::set_offsets(const unsigned long long* offsets, size_t count)
 
 void Disk_Streamer::set_sample_counts(unsigned long long* sample_counts, size_t count)
 {
+	memset(sample_counts, 0, count * sizeof(unsigned long long));
 	this->impl->sample_counts = { sample_counts, count };
 }
 	
@@ -345,6 +412,7 @@ bool Disk_Streamer::start_streaming(double sample_rate, int samples_per_block)
 
 bool Disk_Streamer::try_get_chunk(float** samples, long long voice_id, size_t channel, size_t num_samples)
 {
+
     return this->impl->try_get_chunk(samples, voice_id, channel, num_samples);
 }
 

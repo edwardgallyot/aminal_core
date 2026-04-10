@@ -27,6 +27,7 @@ struct Sampler::Impl
 		for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 		{
 			free_voices.push({ .sample_id = -1, .voice_id = v });
+			voices[v].sample_id = -1;
 		}
     }
     ~Impl()
@@ -60,8 +61,8 @@ struct Sampler::Impl
 
 	void activate_voice(Voice v)
 	{
-		this->voice_requests[v.voice_id].store(true);
 		this->voice_request_sample_ids[v.voice_id].store(v.sample_id);
+		this->voice_requests[v.voice_id].store(true);
 	}
 	
 	void deactivate_voice(Voice v)
@@ -204,21 +205,32 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 	float* streamed_chunk;
 	for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 	{
+		auto sample_id = this->impl->voices[v].sample_id;;
 		for (int channel = 0; channel < samples.getNumChannels(); ++channel)
 		{
+			if (sample_id == -1)
+			{
+				continue;
+			}
+			
 			if (!this->impl->disk_streamer.try_get_chunk(&streamed_chunk, v, channel, samples.getNumSamples()))
 			{
 				continue;
 			}
+#if 0
+			std::cout << "CHUNK "
+					  << sample_id
+					  << ": "
+					  << this->impl->sample_names[sample_id]
+					  << std::endl;
+#endif
 
 			float* write = samples.getWritePointer(channel);
 		
-			for (int sample = 0; sample < samples.getNumSamples(); ++sample)
-			{
-				write[sample] += streamed_chunk[sample];
-			}
+			juce::FloatVectorOperations::add(write, streamed_chunk, samples.getNumSamples());
 		}
 	}
+
 }
 
 void Sampler::release()
