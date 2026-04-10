@@ -142,7 +142,7 @@ const aminals::Mutable_Span<float> Stereo_Pcm_Chunk::get_channel(Channel c)
 struct Disk_Streamer::Impl
 {
     static constexpr size_t Expected_Block_Size = 1024;
-    static constexpr size_t Num_Blocks          = 16;
+    static constexpr size_t Num_Blocks          = 64;
 	// TODO(edg): We should define "MappedFiles" in an environment file.
 	static constexpr size_t Expected_Queues     = Disk_Streamer::Num_Voices*Disk_Streamer::Channels_Per_Voice;
 
@@ -159,7 +159,7 @@ struct Disk_Streamer::Impl
  	
     using Queue = Streaming_Queue<Expected_Queues, Queue_Size>;
 	
-    Impl(std::array<std::atomic_bool, Num_Voices>& _voice_requests,
+    Impl(std::array<std::atomic<Disk_Streamer::Voice_State>, Num_Voices>& _voice_requests,
 		 std::array<std::atomic<long long>, Num_Voices>& _voice_request_sample_ids)
 		: queue(),
 		  scratch(),
@@ -191,10 +191,10 @@ struct Disk_Streamer::Impl
 	aminals::Span<unsigned long long> offsets;
 	aminals::Span<unsigned long long> channel_strides;
 	aminals::Span<unsigned long long> sizes;
-	aminals::Mutable_Span<unsigned long long> sample_counts;
+	std::array<unsigned long long, Num_Voices> sample_counts;
 	uint32_t block_size;
 	double fs;
-	std::array<std::atomic_bool, Num_Voices>& voice_requests;
+	std::array<std::atomic<Disk_Streamer::Voice_State>, Num_Voices>& voice_requests;
 	std::array<std::atomic<long long>, Num_Voices>& voice_request_sample_ids;
 };
 
@@ -203,7 +203,7 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 	stop_streaming();
 	this->stream.store(true);
 	this->fs = sample_rate;
-	this->block_size = samples_per_block * (Disk_Streamer::Impl::Num_Blocks / 4);
+	this->block_size = (int)(sample_rate / 100); // 10ms blocks
 	this->queue.reset_queues();
     auto thread_func = [&] () {
 		juce::File file = juce::File(this->filename);
@@ -223,23 +223,42 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 		std::cout << "samples per block: " << this->block_size << std::endl;
 		
 		bool written[Disk_Streamer::Num_Voices][Disk_Streamer::Channels_Per_Voice] = { };
-		
         while (this->stream.load())
         {
 			bool anyone_free = false;
 			bool can_write[Disk_Streamer::Num_Voices][Disk_Streamer::Channels_Per_Voice] = { };
 			bool can_read[Disk_Streamer::Num_Voices][Disk_Streamer::Channels_Per_Voice] = { };
 			Stereo_Pcm_Chunk pcm_chunks[Disk_Streamer::Num_Voices] = {};
+
 			while (!anyone_free  && this->stream.load())
 			{
 				for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 				{
 					auto atomic_sample_id = voice_request_sample_ids[v].load();
+					auto state = voice_requests[v].load();
 					
-					if (voice_requests[v].load() && atomic_sample_id != -1)
+					if (state == Disk_Streamer::Voice_State::Stop_Request)
 					{
-
-
+						std::cout << "Stopping!!" << std::endl;
+						voice_requests[v].store(Disk_Streamer::Voice_State::Stopping);
+						this->sample_counts[v] = 0;
+						pcm_chunks[v] = {};
+					
+						for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
+						{
+							can_read[v][channel] = false;
+							can_write[v][channel] = false;
+						}
+					}
+					
+					if (state == Disk_Streamer::Voice_State::Start_Request)
+					{
+						std::cout << "Starting!!" << std::endl;
+						voice_requests[v].store(Disk_Streamer::Voice_State::Started);
+					}
+					
+					if (state == Disk_Streamer::Voice_State::Started)
+					{
 						auto left = reinterpret_cast<float*>(
 							&mapped_data[this->offsets[atomic_sample_id]]);
 						auto right = reinterpret_cast<float*>(
@@ -250,28 +269,21 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 							right,
 							this->channel_strides[atomic_sample_id]
 						};
+
 						for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 						{
 							can_read[v][channel] =
 								pcm_chunks[v].get_num_can_read(Stereo_Pcm_Chunk::channel_from_index(channel),
-														   this->sample_counts[atomic_sample_id])
-								>= this->block_size;
-
-							
+															   this->sample_counts[v]) >= this->block_size;
 							can_write[v][channel] =
 								this->queue.get_free_space(channel + (Disk_Streamer::Channels_Per_Voice * v)) >= this->block_size;
-
-							// TODO(edg): These just loop how do we fix this?
-							if (!can_read[v][channel])
-							{
-								this->sample_counts[atomic_sample_id] = 0;
-							}
-
+					
 							anyone_free = anyone_free || can_write[v][channel] || written[v][channel];
 						}
-
 					}
 				}
+
+				
 				if (!anyone_free && this->stream.load()) wait.acquire();
 			}
 			
@@ -284,12 +296,13 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 				for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 				{
 					if (written[v][channel]) continue;
+
 					if(can_write[v][channel] && can_read[v][channel] && atomic_sample_id != -1)
 					{
-						float* scratch_samples;;
+						float* scratch_samples;
 						pcm_chunks[v].read(Stereo_Pcm_Chunk::channel_from_index(channel),
 									   &scratch_samples,
-									   this->sample_counts[atomic_sample_id]);
+									   this->sample_counts[v]);
 						written[v][channel] = this->queue.try_write(
 							(v * Disk_Streamer::Channels_Per_Voice) + channel,
 							scratch_samples,
@@ -305,14 +318,16 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 #endif
 					}
 				}
+
 				bool all_written = true;
 				for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 				{
 					all_written = all_written && written[v][channel];
 				}
+				
 				if (all_written)
 				{
-					this->sample_counts[atomic_sample_id] += this->block_size;
+					this->sample_counts[v] += this->block_size;
 					for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 					{
 						written[v][channel] = false;
@@ -364,7 +379,7 @@ bool Disk_Streamer::Impl::stop_streaming()
 }
 
 Disk_Streamer::Disk_Streamer(
-	std::array<std::atomic_bool, Num_Voices>& voice_requests,
+	std::array<std::atomic<Disk_Streamer::Voice_State>, Num_Voices>& voice_requests,
 	std::array<std::atomic<long long>, Num_Voices>& voice_request_sample_ids)
     : arena(),
       impl(arena.make_unique<Disk_Streamer::Impl>(voice_requests, voice_request_sample_ids))
@@ -388,12 +403,6 @@ void Disk_Streamer::set_total_sizes(const unsigned long long* sizes, size_t coun
 void Disk_Streamer::set_offsets(const unsigned long long* offsets, size_t count)
 {
 	this->impl->offsets = { offsets, count };
-}
-
-void Disk_Streamer::set_sample_counts(unsigned long long* sample_counts, size_t count)
-{
-	memset(sample_counts, 0, count * sizeof(unsigned long long));
-	this->impl->sample_counts = { sample_counts, count };
 }
 	
 void Disk_Streamer::set_channel_strides(const unsigned long long* channel_strides, size_t count)

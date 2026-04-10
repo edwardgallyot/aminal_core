@@ -18,13 +18,12 @@ namespace aminals
 		void set_voice_assignments(long long* voice_assignments, size_t count);
 		void set_midi_map(const char* midi_map, size_t count = 127);
 		void set_sample_names(const char** sample_names, size_t count);
-		void set_sample_counts(unsigned long long* sample_counts, size_t count);
 		void set_channel_strides(const unsigned long long* channel_strides, size_t count);
         void prepare(double sample_rate, int sample_per_block);
         void process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& buffer);
         void release();
 
-        static constexpr size_t MemoryBytes = aminals::Arena<>::const_align(50597400, sizeof(size_t));
+        static constexpr size_t MemoryBytes = aminals::Arena<>::const_align(50597512, sizeof(size_t));
         using Arena = aminals::Arena<MemoryBytes>;
         struct Impl;
     private:

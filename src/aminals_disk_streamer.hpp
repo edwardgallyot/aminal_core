@@ -11,7 +11,16 @@ namespace aminals
 		static constexpr size_t Num_Voices = 32;
 		static constexpr size_t Channels_Per_Voice = 2;
 
-		Disk_Streamer(std::array<std::atomic_bool, Num_Voices>& voice_requests,
+		enum class Voice_State : uint32_t
+		{
+			Stopped = 0,
+			Start_Request,
+			Started,
+			Stop_Request,
+			Stopping
+		};
+
+		Disk_Streamer(std::array<std::atomic<Voice_State>, Num_Voices>& voice_requests,
 					  std::array<std::atomic<long long>, Num_Voices>& voice_request_sample_ids);
         ~Disk_Streamer();
 

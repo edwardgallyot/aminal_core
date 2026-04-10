@@ -1,3 +1,4 @@
+#include <bitset>
 #include <iostream>
 
 #include "aminals_sampler.hpp"
@@ -46,33 +47,41 @@ struct Sampler::Impl
 		return false;
 	}
 
-	bool deallocate_sample_id(long long sample_id)
+	bool try_deallocate_voice(Voice& v)
 	{
-		auto voice_id = this->voice_assignments[sample_id];
-		if (voice_id == -1)
+		if (this->free_voices.push({-1, v.voice_id}))
 		{
-			return false;
+			this->voices[v.voice_id].sample_id = -1;
+			return true;
 		}
-
-		this->voices[voice_id].sample_id = -1;
-		free_voices.push({-1, voice_id});
-		return true;
+		return false;
 	}
 
-	void activate_voice(Voice v)
+	bool activate_voice(Voice v)
 	{
-		this->voice_request_sample_ids[v.voice_id].store(v.sample_id);
-		this->voice_requests[v.voice_id].store(true);
+		if (this->voice_requests[v.voice_id].load() == Disk_Streamer::Voice_State::Stopped)
+		{
+		    this->voice_request_sample_ids[v.voice_id].store(v.sample_id);
+		    this->voice_requests[v.voice_id].store(Disk_Streamer::Voice_State::Start_Request);
+			return true;
+		}
+		return false;
 	}
 	
-	void deactivate_voice(Voice v)
+	bool deactivate_voice(Voice v)
 	{
-		this->voice_requests[v.voice_id].store(false);
-		this->voice_request_sample_ids[v.voice_id].store(-1);
+		if (this->voice_requests[v.voice_id].load() == Disk_Streamer::Voice_State::Started)
+		{
+			this->voice_requests[v.voice_id].store(Disk_Streamer::Voice_State::Stop_Request);
+			return true;
+		}
+		return false;
 	}
     
-	std::array<std::atomic_bool, Disk_Streamer::Num_Voices> voice_requests;
+	std::array<std::atomic<Disk_Streamer::Voice_State>, Disk_Streamer::Num_Voices> voice_requests;
 	std::array<std::atomic<long long>, Disk_Streamer::Num_Voices> voice_request_sample_ids;
+	std::bitset<Disk_Streamer::Num_Voices> deactivation_pending;
+	std::bitset<Disk_Streamer::Num_Voices> activation_pending;
     Disk_Streamer disk_streamer;
 	
 	aminals::Span<char> midi_map;
@@ -126,11 +135,6 @@ void Sampler::set_sample_names(const char** sample_names, size_t count)
 	this->impl->sample_names = { sample_names, count };
 }
 
-void Sampler::set_sample_counts(unsigned long long* sample_counts, size_t count)
-{
-	this->impl->disk_streamer.set_sample_counts(sample_counts, count);
-};
-
 void Sampler::set_channel_strides(const unsigned long long* channel_strides, size_t count)
 {
 	this->impl->disk_streamer.set_channel_strides(channel_strides, count);
@@ -143,6 +147,9 @@ void Sampler::prepare(double sample_rate, int samples_per_block)
 
 void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 {
+
+	// Firstly, process the midi data. We can use the
+	// input to make our requests to the disk streamer.
     for (const auto& metadata : midi)
     {
         auto message = metadata.getMessage();
@@ -165,7 +172,11 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 						  << " -> "
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
-				this->impl->activate_voice(v);
+				if (!this->impl->activate_voice(v))
+				{
+					this->impl->activation_pending[v.voice_id] = false;
+					this->impl->try_deallocate_voice(v);
+				}
 			}
 			else
 			{
@@ -175,19 +186,15 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 
 		if (message.isNoteOff())
 		{
-			auto voice_id = this->impl->voice_assignments[sample_id];
-			if (this->impl->deallocate_sample_id(sample_id))
+			for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 			{
-				std::cout << "Voice: "
-						  << voice_id
-						  << " -x "
-						  << this->impl->sample_names[sample_id]
-						  << std::endl;
-				this->impl->deactivate_voice({ .sample_id = sample_id, .voice_id = voice_id });
-			}
-			else
-			{
-				std::cout << "Unable to deallocate voice" << std::endl;
+				auto voice = this->impl->voices[v];
+
+				if (this->impl->midi_map[message.getNoteNumber()] == voice.sample_id)
+				{
+					this->impl->deactivation_pending[voice.voice_id]
+						= !this->impl->deactivate_voice(voice);					
+				}
 			}
 		}
     }
@@ -205,7 +212,20 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 	float* streamed_chunk;
 	for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 	{
-		auto sample_id = this->impl->voices[v].sample_id;;
+		auto voice = this->impl->voices[v];
+		if (this->impl->activation_pending[v])
+		{
+			this->impl->activation_pending[v] = !this->impl->activate_voice(voice);
+		}
+		
+		if (this->impl->deactivation_pending[v])
+		{
+			this->impl->deactivation_pending[v] = !this->impl->deactivate_voice(voice);
+		}
+		
+		auto sample_id = voice.sample_id;
+		auto any_chunk = false;
+		auto state = this->impl->voice_requests[v].load();
 		for (int channel = 0; channel < samples.getNumChannels(); ++channel)
 		{
 			if (sample_id == -1)
@@ -214,6 +234,12 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 			}
 			
 			if (!this->impl->disk_streamer.try_get_chunk(&streamed_chunk, v, channel, samples.getNumSamples()))
+			{
+				continue;
+			}
+			any_chunk = true;
+			
+			if (state == Disk_Streamer::Voice_State::Stopping)
 			{
 				continue;
 			}
@@ -226,11 +252,28 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 #endif
 
 			float* write = samples.getWritePointer(channel);
-		
+
+
 			juce::FloatVectorOperations::add(write, streamed_chunk, samples.getNumSamples());
 		}
+		
+		if (!any_chunk && state == Disk_Streamer::Voice_State::Stopping)
+		{
+			if (this->impl->try_deallocate_voice(voice))
+			{
+				std::cout << "Voice: "
+						  << voice.voice_id
+						  << " -x "
+						  << this->impl->sample_names[sample_id]
+						  << std::endl;
+				this->impl->voice_requests[v].store(Disk_Streamer::Voice_State::Stopped);
+			}
+			else
+			{
+				std::cout << "Unable to deallocate voice" << std::endl;
+			}
+		}
 	}
-
 }
 
 void Sampler::release()
