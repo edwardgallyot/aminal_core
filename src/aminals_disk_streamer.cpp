@@ -203,7 +203,7 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 	stop_streaming();
 	this->stream.store(true);
 	this->fs = sample_rate;
-	this->block_size = (int)(sample_rate / 100); // 10ms blocks
+	this->block_size = samples_per_block; // 10ms blocks
 	this->queue.reset_queues();
     auto thread_func = [&] () {
 		juce::File file = juce::File(this->filename);
@@ -239,7 +239,6 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 					
 					if (state == Disk_Streamer::Voice_State::Stop_Request)
 					{
-						std::cout << "Stopping!!" << std::endl;
 						voice_requests[v].store(Disk_Streamer::Voice_State::Stopping);
 						this->sample_counts[v] = 0;
 						pcm_chunks[v] = {};
@@ -253,7 +252,6 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 					
 					if (state == Disk_Streamer::Voice_State::Start_Request)
 					{
-						std::cout << "Starting!!" << std::endl;
 						voice_requests[v].store(Disk_Streamer::Voice_State::Started);
 					}
 					

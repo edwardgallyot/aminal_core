@@ -8,7 +8,7 @@ namespace aminals
     class Disk_Streamer
     {
     public:
-		static constexpr size_t Num_Voices = 32;
+		static constexpr size_t Num_Voices = 512;
 		static constexpr size_t Channels_Per_Voice = 2;
 
 		enum class Voice_State : uint32_t
@@ -33,7 +33,7 @@ namespace aminals
         bool try_get_chunk(float** out_samples, long long voice_id, size_t channel, size_t num_samples);
         bool stop_streaming();
 
-        static constexpr size_t MemoryBytes = Arena<>::const_align(50596000, sizeof(size_t));
+        static constexpr size_t MemoryBytes = Arena<>::const_align(272674960, sizeof(size_t));
         using Arena = aminals::Arena<MemoryBytes>;
         struct Impl;
     private:

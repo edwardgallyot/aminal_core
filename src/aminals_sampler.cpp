@@ -23,12 +23,14 @@ struct Sampler::Impl
 			 sample_names(),
 			 voice_assignments(),
 			 voices(),
-			 free_voices()
+			 free_voices(),
+			 adsrs()
     {
 		for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 		{
-			free_voices.push({ .sample_id = -1, .voice_id = v });
-			voices[v].sample_id = -1;
+			this->free_voices.push({ .sample_id = -1, .voice_id = v });
+			this->voices[v].sample_id = -1;
+			this->adsrs[v].setParameters({ 1.0f, 0.1f, 1.0f, 1.0f });
 		}
     }
     ~Impl()
@@ -89,6 +91,8 @@ struct Sampler::Impl
 	aminals::Mutable_Span<long long> voice_assignments;
 	std::array<Voice, Disk_Streamer::Num_Voices> voices;
 	aminals::Fixed_Stack<Voice, Disk_Streamer::Num_Voices> free_voices;
+	std::array<juce::ADSR, Disk_Streamer::Num_Voices> adsrs;
+	std::vector<float> adsr_buffer;
 };
 
 Sampler::Sampler()
@@ -99,6 +103,41 @@ Sampler::Sampler()
 
 Sampler::~Sampler()
 {
+}
+
+void Sampler::set_attack(float attack_seconds)
+{
+	for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
+	{
+		auto p = this->impl->adsrs[v].getParameters();
+		if (p.attack != attack_seconds)
+		{
+			this->impl->adsrs[v].setParameters({
+				attack_seconds,
+				p.decay,
+				p.sustain,
+				p.release
+			});
+		}
+	}
+}
+
+void Sampler::set_release(float release_seconds)
+{
+	for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
+	{
+		auto p = this->impl->adsrs[v].getParameters();
+		if (p.release != release_seconds)
+		{
+			this->impl->adsrs[v].setParameters({
+				p.attack,
+				p.decay,
+				p.sustain,
+				release_seconds
+				});
+		}
+		
+	}
 }
 
 void Sampler::set_streaming_file(const char* filename)
@@ -143,6 +182,11 @@ void Sampler::set_channel_strides(const unsigned long long* channel_strides, siz
 void Sampler::prepare(double sample_rate, int samples_per_block)
 {
     this->impl->disk_streamer.start_streaming(sample_rate, samples_per_block);
+	this->impl->adsr_buffer.resize(samples_per_block);
+	for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
+	{
+		this->impl->adsrs[v].setSampleRate(sample_rate);
+	}
 }
 
 void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
@@ -177,6 +221,10 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 					this->impl->activation_pending[v.voice_id] = false;
 					this->impl->try_deallocate_voice(v);
 				}
+				else
+				{
+					this->impl->adsrs[v.voice_id].noteOn();
+				}
 			}
 			else
 			{
@@ -192,8 +240,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 
 				if (this->impl->midi_map[message.getNoteNumber()] == voice.sample_id)
 				{
-					this->impl->deactivation_pending[voice.voice_id]
-						= !this->impl->deactivate_voice(voice);					
+					this->impl->adsrs[v].noteOff();
 				}
 			}
 		}
@@ -209,23 +256,36 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 		}
 	}
 
+	// Now stream in samples from the disk_streamer
 	float* streamed_chunk;
 	for (int v = 0; v < Disk_Streamer::Num_Voices; ++v)
 	{
 		auto voice = this->impl->voices[v];
+		auto state = this->impl->voice_requests[v].load();
+		
 		if (this->impl->activation_pending[v])
 		{
 			this->impl->activation_pending[v] = !this->impl->activate_voice(voice);
 		}
+
+		bool adsr_finished = false;
+		if (state == Disk_Streamer::Voice_State::Started)
+		{
+			for (int sample = 0; sample < samples.getNumSamples(); ++sample)
+			{
+				this->impl->adsr_buffer[sample] = this->impl->adsrs[v].getNextSample();
+				// std::cout << this->impl->adsr_buffer[sample] << std::endl;
+			}
+			adsr_finished = !this->impl->adsrs[v].isActive();
+		}
 		
-		if (this->impl->deactivation_pending[v])
+		if (this->impl->deactivation_pending[v] || adsr_finished)
 		{
 			this->impl->deactivation_pending[v] = !this->impl->deactivate_voice(voice);
 		}
 		
 		auto sample_id = voice.sample_id;
 		auto any_chunk = false;
-		auto state = this->impl->voice_requests[v].load();
 		for (int channel = 0; channel < samples.getNumChannels(); ++channel)
 		{
 			if (sample_id == -1)
@@ -252,8 +312,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 #endif
 
 			float* write = samples.getWritePointer(channel);
-
-
+			juce::FloatVectorOperations::multiply(streamed_chunk, this->impl->adsr_buffer.data(), samples.getNumSamples());
 			juce::FloatVectorOperations::add(write, streamed_chunk, samples.getNumSamples());
 		}
 		
@@ -266,6 +325,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 						  << " -x "
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
+				this->impl->adsrs[v].reset();
 				this->impl->voice_requests[v].store(Disk_Streamer::Voice_State::Stopped);
 			}
 			else

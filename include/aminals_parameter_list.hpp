@@ -8,6 +8,7 @@ namespace aminals
     {
     public:
         Parameter_List(Processor& p, juce::AudioProcessorValueTreeState::ParameterLayout&& layout);
+		const juce::AudioProcessorValueTreeState& get_tree() { return this->tree; }
     private:
         juce::AudioProcessorValueTreeState tree; 
     };
