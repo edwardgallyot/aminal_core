@@ -211,11 +211,13 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 			Voice v;
 			if (this->impl->try_allocate_voice(v, sample_id))
 			{
+#if 0
 				std::cout << "Voice: "
 						  << v.voice_id
 						  << " -> "
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
+#endif
 				if (!this->impl->activate_voice(v))
 				{
 					this->impl->activation_pending[v.voice_id] = false;
@@ -274,7 +276,6 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 			for (int sample = 0; sample < samples.getNumSamples(); ++sample)
 			{
 				this->impl->adsr_buffer[sample] = this->impl->adsrs[v].getNextSample();
-				// std::cout << this->impl->adsr_buffer[sample] << std::endl;
 			}
 			adsr_finished = !this->impl->adsrs[v].isActive();
 		}
@@ -320,11 +321,13 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 		{
 			if (this->impl->try_deallocate_voice(voice))
 			{
+#if 0
 				std::cout << "Voice: "
 						  << voice.voice_id
 						  << " -x "
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
+#endif
 				this->impl->adsrs[v].reset();
 				this->impl->voice_requests[v].store(Disk_Streamer::Voice_State::Stopped);
 			}

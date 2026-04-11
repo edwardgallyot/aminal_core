@@ -242,7 +242,7 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 						voice_requests[v].store(Disk_Streamer::Voice_State::Stopping);
 						this->sample_counts[v] = 0;
 						pcm_chunks[v] = {};
-					
+						anyone_free = false;
 						for (int channel = 0; channel < Disk_Streamer::Channels_Per_Voice; ++channel)
 						{
 							can_read[v][channel] = false;
@@ -276,7 +276,7 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 							can_write[v][channel] =
 								this->queue.get_free_space(channel + (Disk_Streamer::Channels_Per_Voice * v)) >= this->block_size;
 					
-							anyone_free = anyone_free || can_write[v][channel] || written[v][channel];
+							anyone_free = anyone_free || (can_write[v][channel] && !written[v][channel]);
 						}
 					}
 				}
@@ -343,7 +343,7 @@ bool Disk_Streamer::Impl::start_streaming(double sample_rate, int samples_per_bl
 bool Disk_Streamer::Impl::try_get_chunk(float** samples, long long voice_id, size_t channel, size_t num_samples)
 {
 	auto res = false;
-	#if 1
+#if 1
 	auto queue = (Disk_Streamer::Channels_Per_Voice * voice_id) + channel;
 	if (this->queue.get_num_ready(queue) >= num_samples
 		&& this->queue.try_read(queue, this->out.data(), num_samples))
@@ -354,11 +354,11 @@ bool Disk_Streamer::Impl::try_get_chunk(float** samples, long long voice_id, siz
 	{
 		out = {};
 	}
-	#else
+#else
 	out = {};
 	wait.release();
-	#endif
-	wait.release();
+#endif
+	wait.release();	
 
 	*samples = this->out.data();
 	return res;
