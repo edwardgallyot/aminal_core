@@ -29,11 +29,14 @@ namespace aminals
 		void set_offsets(const unsigned long long* offsets, size_t count);
 		void set_channel_strides(const unsigned long long* channel_strides, size_t count);
 		void set_sample_counts(unsigned long long* sample_counts, size_t count);
+		void set_pre_fetch_buffers(float* buffers, size_t count, size_t buffer_size);
 		bool start_streaming(double sample_rate, int samples_per_block);
         bool try_get_chunk(float** out_samples, long long voice_id, size_t channel, size_t num_samples);
+		void reset_read_head(long long voice_id);
         bool stop_streaming();
 
-        static constexpr size_t MemoryBytes = Arena<>::const_align(272674960, sizeof(size_t));
+        static constexpr size_t MemoryBytes = Arena<>::const_align(272679176, sizeof(size_t));
+
         using Arena = aminals::Arena<MemoryBytes>;
         struct Impl;
     private:

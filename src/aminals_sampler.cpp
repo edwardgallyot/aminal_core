@@ -179,6 +179,11 @@ void Sampler::set_channel_strides(const unsigned long long* channel_strides, siz
 	this->impl->disk_streamer.set_channel_strides(channel_strides, count);
 }
 
+void Sampler::set_pre_fetch_buffers(float* buffers, size_t count, size_t buffer_size)
+{
+	this->impl->disk_streamer.set_pre_fetch_buffers(buffers, count, buffer_size);
+}
+
 void Sampler::prepare(double sample_rate, int samples_per_block)
 {
     this->impl->disk_streamer.start_streaming(sample_rate, samples_per_block);
@@ -328,6 +333,7 @@ void Sampler::process(juce::AudioBuffer<float>& samples, juce::MidiBuffer& midi)
 						  << this->impl->sample_names[sample_id]
 						  << std::endl;
 #endif
+				this->impl->disk_streamer.reset_read_head(v);
 				this->impl->adsrs[v].reset();
 				this->impl->voice_requests[v].store(Disk_Streamer::Voice_State::Stopped);
 			}
