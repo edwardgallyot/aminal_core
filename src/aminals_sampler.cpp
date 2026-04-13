@@ -30,7 +30,7 @@ struct Sampler::Impl
 		{
 			this->free_voices.push({ .sample_id = -1, .voice_id = v });
 			this->voices[v].sample_id = -1;
-			this->adsrs[v].setParameters({ 1.0f, 0.1f, 1.0f, 1.0f });
+			this->adsrs[v].setParameters({ 1.0f, 0.0f, 1.0f, 1.0f });
 		}
     }
     ~Impl()
