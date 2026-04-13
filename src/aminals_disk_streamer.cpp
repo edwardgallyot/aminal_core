@@ -46,10 +46,6 @@ template<size_t Num_Queues, size_t Capacity>
 void Streaming_Queue<Num_Queues, Capacity>::copy_some_data(float* dest, const float* src, int num_items)
 {
 	juce::FloatVectorOperations::copy(dest, src, num_items);
-	// for (int i = 0; i < num_items; ++i)
-	// {
-	// 	dest[i] = src[i];
-	// }
 }
 
 template<size_t Num_Queues, size_t Capacity>
